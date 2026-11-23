@@ -36,15 +36,65 @@
 
 import type { OAuthCredentials, OAuthLoginCallbacks } from "@earendil-works/pi-ai/compat";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { readFileSync } from "node:fs";
 
 const ISSUER = "https://auth.bloemendal.me";
 const CLIENT_ID = "pi-cli";
 const BASE_URL = "https://llm.bloemendal.me/v1";
 
-// `groups` is what the gateway's oauth2-proxy checks (allowed_groups = ["admins"]), and
-// `offline_access` is what makes a refresh_token exist at all -- without it the login would
-// expire every hour and demand a fresh browser approval.
+// offline_access is what makes a refresh_token exist at all; without it this login dies with the
+// 1-hour access token and demands a fresh browser approval every hour. `groups` is requested for
+// completeness only -- nothing gates on it, because a device-flow id_token carries no `groups` or
+// `email` claim on Authelia 4.39.28 (handler_oauth2_consent.go restores the device request with an
+// empty oidc.NewSession(), so scope claims are dropped even though consent records them granted).
+// The gateway therefore authorises on issuer + aud=pi-cli + the TOTP-backed session; putting
+// allowed_groups in oauth2-proxy would deny every CLI request against a claim that is never sent.
 const SCOPE = "openid profile email groups offline_access";
+
+/**
+ * Optional Bifrost virtual key.
+ *
+ * The Authelia token and the Bifrost key answer two different questions -- "may this machine
+ * reach the gateway at all" and "which key owns this traffic" -- and they travel in different
+ * headers because there is only one Authorization header:
+ *
+ *   Authorization: Bearer <Authelia id_token>   <- validated by the gateway; the gate
+ *   x-api-key:     <Bifrost virtual key>        <- reaches Bifrost untouched; per-machine identity
+ *
+ * Measured against Bifrost v2.6.0 on the gateway host, not inferred: `x-api-key` (and `api-key`)
+ * is accepted for a VK, and when both are present **x-api-key wins** -- a valid VK with a garbage
+ * Authorization returns 200, a valid Authorization with a bogus x-api-key returns 401. So the VK
+ * takes over accounting while the gate still decides reachability, and HAProxy's edge-key
+ * substitution (haproxy.cfg, `set-header Authorization "Bearer ${BIFROST_EDGE_KEY}"`) becomes the
+ * fallback rather than the identity: no x-api-key, no per-machine key, exactly the old behaviour.
+ *
+ * Do NOT put the VK in Authorization on the public URL: the gateway validates that header as an
+ * Authelia token and will 401 it. That is the whole point of the design.
+ *
+ * Caveat worth stating rather than hiding: the choice of key is self-declared. Any client that
+ * passes Authelia can name any VK. With one operator and one estate that is a labelling
+ * convenience, not a control; if it ever needs to be a control, pin identity to key in HAProxy off
+ * the X-Auth-Request-User header the auth response already mints, and delete x-api-key first.
+ */
+const VK_ENV = "BIFROST_API_KEY";
+const VK_FILE = ".pi/agent/bifrost_key"; // under $HOME, so a headless box needs no shell config
+
+function virtualKey(): string {
+	const fromEnv = (process.env[VK_ENV] ?? "").trim();
+	if (fromEnv) return fromEnv;
+	try {
+		// A file rather than only an env var because Pi is usually started from an interactive
+		// shell on a box reached over ssh, and leaking a key into shell config or `ps` output is
+		// the failure mode worth avoiding here. Read with no logging; never echoed.
+		const home = process.env.HOME ?? "";
+		if (!home) return "";
+		const raw = readFileSync(`${home}/${VK_FILE}`, "utf8") as string;
+		// Tolerate a trailing newline (editors add one) and an accidental "Bearer " prefix.
+		return raw.trim().replace(/^Bearer\s+/i, "");
+	} catch {
+		return ""; // absent or unreadable is a normal state: Authelia-only, edge key at the gate
+	}
+}
 
 // Refresh a little before the real expiry so a long request is not started on a token that
 // dies mid-stream.
@@ -253,9 +303,14 @@ export default function (pi: ExtensionAPI) {
 	// Install on the client machines only (rokan, and anywhere else Pi talks to the public
 	// gateway). Installing it on the gateway host itself would route that Pi through the public
 	// URL and the SSO it fronts.
+	const key = virtualKey();
+
 	pi.registerProvider("Bifrost", {
 		baseUrl: BASE_URL,
 		api: "openai-completions",
+		// Omitted entirely when unset, so a machine with no VK keeps working through the gateway's
+		// shared edge key instead of sending an empty header that Bifrost would (correctly) reject.
+		...(key ? { headers: { "x-api-key": key } } : {}),
 		oauth: {
 			name: "Authelia (browser + TOTP)",
 			login,
