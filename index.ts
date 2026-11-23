@@ -197,6 +197,18 @@ async function login(callbacks: OAuthLoginCallbacks): Promise<OAuthCredentials> 
 			waitMs = Math.max(waitMs + 5000, (Number(res.body.interval) || 0) * 1000);
 			continue;
 		}
+		// HTTP 429 / temporarily_unavailable: seen in production against Authelia 4.39.28, whose
+		// rate limiter fronts /api/oidc/token. Per RFC 8628 3.5 this is retryable, not fatal -- a
+		// login that polls the full 10 minutes at the advertised 10s interval makes ~60 requests,
+		// so a limiter tuned for a browser session will bite. Exponential backoff keeps the login
+		// alive; the deadline still bounds the total wait so a persistently limited client cannot
+		// spin forever. server_error is retryable by the same section.
+		if (res.status === 429 || err === "temporarily_unavailable" || err === "server_error") {
+			const suggested = Number(res.body.interval) || 0;
+			waitMs = Math.min(Math.max(waitMs * 2, suggested * 1000, 15_000), 60_000);
+			callbacks.onProgress?.(`Authelia is rate limiting this client; polling every ${Math.round(waitMs / 1000)}s`);
+			continue;
+		}
 		if (err === "access_denied") throw new Error("Login declined in the browser.");
 		if (err === "expired_token") throw new Error("The device code expired before the login finished. Try again.");
 		throw new Error(
