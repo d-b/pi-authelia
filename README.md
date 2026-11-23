@@ -46,8 +46,8 @@ Resolution order, first match wins:
 2. `key` on the credential in use
 3. `key` in `auth.json` for the configured provider
 
-(`gatewayKey`, which 1.1.0 wrote, is still read in both places, so an upgraded client keeps working
-without re-logging-in; if both names exist, `key` wins.)
+(`gatewayKey`, the name development builds briefly wrote, is still read in both places, so such a
+machine keeps working without re-logging-in; if both names exist, `key` wins.)
 
 Nothing here is tied to one product, so all of it is overridable:
 
