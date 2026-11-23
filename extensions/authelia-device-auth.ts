@@ -1,7 +1,8 @@
 /**
- * Authelia device-authorization login for the `Bifrost` provider.
+ * Authelia device-authorization login for an SSO-fronted OpenAI-compatible gateway provider
+ * (default provider name `Bifrost`, overridable with GATEWAY_PROVIDER_NAME).
  *
- * `/login Bifrost` prints a URL and a short code, the operator opens it in any browser
+ * `/login <provider>` prints a URL and a short code, the operator opens it in any browser
  * (phone is fine), does password + TOTP on https://auth.bloemendal.me, and this flow finishes
  * by itself: no callback URL to paste, no port to forward, nothing to copy back into the
  * terminal. That last part is why the machine can be a headless box reached over ssh.
@@ -98,10 +99,10 @@ const CONFIG = {
  * convenience; to make it a control, pin X-Auth-Request-User to a key in HAProxy and delete
  * inbound x-api-key first.
  */
-const VK_FIELD = "gatewayKey";
+const KEY_FIELD = "gatewayKey";
 
 /** auth.json credentials plus our one optional field. */
-type Credentials = OAuthCredentials & { [VK_FIELD]?: string };
+type Credentials = OAuthCredentials & { [KEY_FIELD]?: string };
 
 /** Tolerate a trailing newline from an editor and an accidental "Bearer " prefix from a paste. */
 function normalizeKey(value: string): string {
@@ -119,14 +120,14 @@ function authJsonPath(): string {
  * Why not through pi: `headers` on registerProvider is resolved once, at registration, so there is
  * no callback to ask -- and the alternative injection point, the `before_provider_headers` hook,
  * fires for *every* provider with an event of exactly `{ type, headers }` and no provider field.
- * Putting the key there would hand your Bifrost key to Anthropic, OpenAI and anything else
+ * Putting the key there would hand your gateway key to Anthropic, OpenAI and anything else
  * configured. Provider-scoped registration is the only safe place, so this one file read is how it
- * gets its value. It reads only Bifrost's own entry and the key is never logged.
+ * gets its value. It reads only the configured provider's own entry and the key is never logged.
  */
-function storedVirtualKey(): string {
+function storedGatewayKey(): string {
 	try {
 		const parsed = JSON.parse(readFileSync(authJsonPath(), "utf8")) as Record<string, Partial<Credentials>>;
-		const value = parsed[CONFIG.provider]?.[VK_FIELD];
+		const value = parsed[CONFIG.provider]?.[KEY_FIELD];
 		return typeof value === "string" ? normalizeKey(value) : "";
 	} catch {
 		return ""; // absent, unreadable or malformed is a normal state: gate-only, shared upstream key
@@ -134,12 +135,12 @@ function storedVirtualKey(): string {
 }
 
 /** Precedence: explicit environment, then this credential, then what auth.json holds. */
-function resolveVirtualKey(credential?: Partial<Credentials>): string {
+function resolveGatewayKey(credential?: Partial<Credentials>): string {
 	const fromEnv = (process.env[CONFIG.keyEnv] ?? "").trim();
 	if (fromEnv) return normalizeKey(fromEnv);
-	const fromCredential = credential?.[VK_FIELD];
+	const fromCredential = credential?.[KEY_FIELD];
 	if (typeof fromCredential === "string" && fromCredential.trim()) return normalizeKey(fromCredential);
-	return storedVirtualKey();
+	return storedGatewayKey();
 }
 
 /**
@@ -147,7 +148,7 @@ function resolveVirtualKey(credential?: Partial<Credentials>): string {
  * behaviour (whatever shared key the gateway substitutes), which is also what a machine without a
  * key of its own should do. A headless caller with no prompt capability is not an error.
  */
-async function promptForVirtualKey(callbacks: OAuthLoginCallbacks): Promise<string> {
+async function promptForGatewayKey(callbacks: OAuthLoginCallbacks): Promise<string> {
 	if (!callbacks.onPrompt) return "";
 	let answer: string;
 	try {
@@ -315,8 +316,8 @@ async function login(callbacks: OAuthLoginCallbacks): Promise<Credentials> {
 			const creds = toCredentials(res.body);
 			// Asked after the token is real, so an abandoned browser login never leaves a stray key
 			// behind, and a key typed into a prompt is stored only alongside a usable credential.
-			const key = await promptForVirtualKey(callbacks);
-			if (key) creds[VK_FIELD] = key;
+			const key = await promptForGatewayKey(callbacks);
+			if (key) creds[KEY_FIELD] = key;
 			return creds;
 		}
 
@@ -369,19 +370,19 @@ async function refreshToken(credentials: Credentials, signal: AbortSignal): Prom
 		const err = str(res.body.error);
 		throw new Error(
 			`Could not refresh the Authelia session (HTTP ${res.status}${err ? `, ${err}` : ""}). ` +
-			`Run /login Bifrost and complete the browser login with TOTP again.`,
+			`Run /login ${CONFIG.provider} and complete the browser login with TOTP again.`,
 		);
 	}
 	const next = toCredentials(res.body);
 	// Carry the key across explicitly. toCredentials builds a fresh object from the token response,
 	// so without this the stored key would silently vanish on the first hourly refresh and traffic
 	// would quietly revert to the shared edge key -- a failure with no error and no log.
-	const carried = normalizeKey(credentials[VK_FIELD] ?? "");
-	if (carried) next[VK_FIELD] = carried;
+	const carried = normalizeKey(credentials[KEY_FIELD] ?? "");
+	if (carried) next[KEY_FIELD] = carried;
 	return next;
 }
 
-export { login, refreshToken, resolveVirtualKey, normalizeKey };
+export { login, refreshToken, resolveGatewayKey, normalizeKey };
 
 export default function (pi: ExtensionAPI) {
 	// Registering the same name the existing models.json entry uses means Pi treats this as that
@@ -392,7 +393,7 @@ export default function (pi: ExtensionAPI) {
 	// Install on the client machines only (rokan, and anywhere else Pi talks to the public
 	// gateway). Installing it on the gateway host itself would route that Pi through the public
 	// URL and the SSO it fronts.
-	const key = resolveVirtualKey();
+	const key = resolveGatewayKey();
 
 	pi.registerProvider(CONFIG.provider, {
 		baseUrl: CONFIG.baseUrl,
