@@ -3,6 +3,26 @@
 Version headings follow Pi's package-changelog convention (`## <version>`), so Pi can show what
 changed after `pi update --extensions`.
 
+## 1.2.0 - 2026-11-23
+
+### The stored field is now `key`
+
+The credential field holding the upstream key is **`key`** rather than `gatewayKey` -- inside a
+provider entry that already says which gateway it belongs to, the longer name was saying it twice.
+
+`gatewayKey` is still **read**, because 1.1.0 wrote it: upgrading costs nothing and no one has to
+re-authenticate. If both names are present `key` wins, every write uses `key`, and refresh promotes a
+legacy value to the new name while it rotates the token.
+
+`key` is also pi's field name for `api_key` credentials, so the overlap was tested rather than
+assumed. With an `oauth` credential carrying `key`, pi 1.6.0 still authenticates using `access` as
+the bearer and sends the key only in the configured header -- confirmed against a local stub gateway
+that records the headers it receives, not by reading pi's source.
+
+Also in this release: the refresh-failure message interpolates the configured provider name instead
+of telling everyone to run `/login Bifrost`, and internal identifiers dropped Bifrost's own
+"virtual key" vocabulary (`VK_FIELD`/`storedVirtualKey` -> `KEY_FIELD`/`storedGatewayKey`).
+
 ## 1.1.0 - 2026-11-23
 
 ### The key is now asked for during `/login`, and the vocabulary is gateway-neutral

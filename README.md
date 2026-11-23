@@ -36,15 +36,18 @@ the end of `/login` to attribute your traffic to a key of its own:
 
     Bifrost API key (optional, for per-machine usage and limits). Press enter to skip.
 
-The value is stored as `gatewayKey` in that provider's `auth.json` entry, so `/logout Bifrost`
+The value is stored as **`key`** in that provider's `auth.json` entry, so `/logout Bifrost`
 clears it along with the credential and there is no separate secrets file to keep track of. Press
 enter and nothing changes from the previous behaviour — the header is omitted rather than sent empty.
 
 Resolution order, first match wins:
 
 1. `$GATEWAY_KEY_ENV` (default `GATEWAY_API_KEY`) — headless and CI runs
-2. `gatewayKey` on the credential in use
-3. `gatewayKey` in `auth.json` for the configured provider
+2. `key` on the credential in use
+3. `key` in `auth.json` for the configured provider
+
+(`gatewayKey`, which 1.1.0 wrote, is still read in both places, so an upgraded client keeps working
+without re-logging-in; if both names exist, `key` wins.)
 
 Nothing here is tied to one product, so all of it is overridable:
 
@@ -90,9 +93,9 @@ key. With one operator that is a labelling convenience; to make it a control, pi
 - **Refresh rotates.** Every refresh returns a new refresh_token; returning only the access
   token would silently kill the session after the first hour. Handled in `refreshToken`.
 - **Refresh also has to re-attach the gateway key.** `toCredentials` builds a fresh object from the
-  token response, so a stored `gatewayKey` would vanish on the first refresh and traffic would
-  quietly revert to the shared key — no error, no log. It is carried over explicitly, and a test
-  covers it.
+  token response, so a stored `key` would vanish on the first refresh and traffic would
+  quietly revert to the shared key — no error, no log. It is carried over explicitly (promoting the
+  legacy `gatewayKey` name to `key`), and a test covers it.
 
 Tokens go only to `~/.pi/agent/auth.json` (pi's own store) — never to logs, including on the
 error paths, which quote Authelia's `error`/`error_description` only.

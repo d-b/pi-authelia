@@ -99,10 +99,28 @@ const CONFIG = {
  * convenience; to make it a control, pin X-Auth-Request-User to a key in HAProxy and delete
  * inbound x-api-key first.
  */
-const KEY_FIELD = "gatewayKey";
+const KEY_FIELD = "key";
+/**
+ * Where 1.1.0 stored it. Still read, so an existing login keeps working across the upgrade without
+ * re-authenticating; every write uses `key`.
+ *
+ * `key` is also pi's field name for api_key credentials, and the overlap is deliberate: this
+ * credential stays `type: "oauth"`, pi still uses `access` as the bearer, and that was re-verified
+ * against a stub gateway after the rename rather than assumed safe.
+ */
+const KEY_FIELD_LEGACY = "gatewayKey";
 
 /** auth.json credentials plus our one optional field. */
-type Credentials = OAuthCredentials & { [KEY_FIELD]?: string };
+type Credentials = OAuthCredentials & { [KEY_FIELD]?: string; [KEY_FIELD_LEGACY]?: string };
+
+/** First non-blank normalized value, so the legacy field name still resolves. */
+function firstKey(...values: Array<string | undefined>): string {
+	for (const v of values) {
+		const k = normalizeKey(v ?? "");
+		if (k) return k;
+	}
+	return "";
+}
 
 /** Tolerate a trailing newline from an editor and an accidental "Bearer " prefix from a paste. */
 function normalizeKey(value: string): string {
@@ -127,8 +145,11 @@ function authJsonPath(): string {
 function storedGatewayKey(): string {
 	try {
 		const parsed = JSON.parse(readFileSync(authJsonPath(), "utf8")) as Record<string, Partial<Credentials>>;
-		const value = parsed[CONFIG.provider]?.[KEY_FIELD];
-		return typeof value === "string" ? normalizeKey(value) : "";
+		const entry = parsed[CONFIG.provider];
+		if (!entry || typeof entry !== "object") return "";
+		const rec = entry as Record<string, unknown>;
+		const raw = rec[KEY_FIELD] ?? rec[KEY_FIELD_LEGACY];
+		return typeof raw === "string" ? normalizeKey(raw) : "";
 	} catch {
 		return ""; // absent, unreadable or malformed is a normal state: gate-only, shared upstream key
 	}
@@ -138,8 +159,8 @@ function storedGatewayKey(): string {
 function resolveGatewayKey(credential?: Partial<Credentials>): string {
 	const fromEnv = (process.env[CONFIG.keyEnv] ?? "").trim();
 	if (fromEnv) return normalizeKey(fromEnv);
-	const fromCredential = credential?.[KEY_FIELD];
-	if (typeof fromCredential === "string" && fromCredential.trim()) return normalizeKey(fromCredential);
+	const fromCredential = firstKey(credential?.[KEY_FIELD], credential?.[KEY_FIELD_LEGACY]);
+	if (fromCredential) return fromCredential;
 	return storedGatewayKey();
 }
 
@@ -377,7 +398,7 @@ async function refreshToken(credentials: Credentials, signal: AbortSignal): Prom
 	// Carry the key across explicitly. toCredentials builds a fresh object from the token response,
 	// so without this the stored key would silently vanish on the first hourly refresh and traffic
 	// would quietly revert to the shared edge key -- a failure with no error and no log.
-	const carried = normalizeKey(credentials[KEY_FIELD] ?? "");
+	const carried = firstKey(credentials[KEY_FIELD], credentials[KEY_FIELD_LEGACY]);
 	if (carried) next[KEY_FIELD] = carried;
 	return next;
 }
