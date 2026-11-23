@@ -3,8 +3,7 @@
 Version headings follow Pi's package-changelog convention (`## <version>`), so Pi can show what
 changed after `pi update --extensions`.
 
-## 1.2.0
-
+## 1.2.0 - 2026-11-23
 ### The default provider is `authelia`
 
 `GATEWAY_PROVIDER_NAME` now defaults to `authelia` instead of `Bifrost` -- the last product-specific

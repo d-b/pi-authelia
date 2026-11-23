@@ -18,6 +18,9 @@
   ],
   "license": "MIT",
   "private": false,
+  "publishConfig": {
+    "access": "public"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/d-b/pi-authelia.git"
@@ -29,6 +32,7 @@
   "files": [
     "extensions",
     "CHANGELOG.md",
+    "LICENSE",
     "README.md"
   ],
   "pi": {

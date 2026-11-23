@@ -9,10 +9,17 @@ bearer to `https://llm.bloemendal.me`, where HAProxy's oauth2-proxy validates it
 ## Install
 
 ```bash
-pi-bolt install npm:@d-b/pi-authelia        # once published (public npm)
-pi-bolt install git:github.com/d-b/pi-authelia@v1.0.0   # needs git read access to the repo on that box
-pi-bolt install ./pi-authelia               # local path, no copying
+pi-bolt install npm:@d-b/pi-authelia               # public npm
+pi-bolt install git:github.com/d-b/pi-authelia     # needs git read access to the repo on that box
+pi-bolt install ./pi-authelia                      # local path, no copying
 ```
+
+Pin with a version on the npm source (`npm:@d-b/pi-authelia@1.2.0`) when you want a client that pi
+will not silently move: pi treats an exact-version spec as pinned and skips the update check. The git
+source behaves the same way only if you name a ref — `git:github.com/d-b/pi-authelia@v1.2.0` — because
+untagged it is reset to whatever `master` holds on every reconcile. Tags start at `v1.0.0`; `v1.0.0`
+and `v1.1.0` name the commits whose four shipped files match the corresponding npm tarballs byte for
+byte, and `v1.2.0` names the release state of this version.
 
 Then `pi-bolt auth check --provider authelia` should report `ready` after a `/login authelia`, and
 `pi-bolt list` shows the declaration that went into `~/.pi/agent/settings.json`.
