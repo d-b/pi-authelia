@@ -1,6 +1,6 @@
 {
   "name": "@d-b/pi-authelia",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Pi provider extension: Authelia device-authorization login (browser password + TOTP, CLI polls to completion) for a self-hosted OpenAI-compatible gateway, with optional upstream gateway-key attribution.",
   "type": "module",
   "keywords": [
@@ -30,14 +30,14 @@
     "url": "https://github.com/d-b/pi-authelia/issues"
   },
   "files": [
-    "extensions",
+    "src",
     "CHANGELOG.md",
     "LICENSE",
     "README.md"
   ],
   "pi": {
     "extensions": [
-      "./extensions/*.ts"
+      "./src/index.ts"
     ],
     "changelogPath": "./CHANGELOG.md"
   },

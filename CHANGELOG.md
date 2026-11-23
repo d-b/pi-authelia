@@ -3,6 +3,32 @@
 Version headings follow Pi's package-changelog convention (`## <version>`), so Pi can show what
 changed after `pi update --extensions`.
 
+## 1.2.1 - 2026-11-23
+### Packaging: the extension moved to `src/index.ts`
+
+`extensions/authelia-device-auth.ts` is now `src/index.ts`, declared explicitly as
+`pi.extensions: ["./src/index.ts"]` instead of the `./extensions/*.ts` glob, and `src` replaces
+`extensions` in `files`. Behaviour is untouched -- the module is a byte-for-byte rename with no
+relative imports, so nothing had to be rewritten.
+
+The reason is pi's startup list. Pi labels a package extension by the directory of its entry when the
+entry file is an index, and falls back to the file name otherwise; the rule was read off the build
+(`getCompactExtensionLabel` in the compiled binary), not guessed:
+
+| Entry | Listed as |
+| --- | --- |
+| `extensions/authelia-device-auth.ts` (was) | `@d-b/pi-authelia:authelia-device-auth.ts` |
+| `src/index.ts` (now) | `@d-b/pi-authelia:src` |
+| `extensions/index.ts` | `@d-b/pi-authelia` |
+
+The third row is why `src/` was chosen over renaming in place: pi strips a leading `extensions/` from
+the relative path, so an index there collapses to a bare package name and loses the directory
+qualifier the other loaded packages show (`pi-exa:src`, `pi-smart-fetch:dist`).
+
+`pi list`, `pi config` and any per-package resource filter address this extension by its path, so a
+declaration that narrowed it (e.g. `"extensions": ["extensions/*.ts"]`) needs `src/index.ts` instead.
+None is needed to load it: a plain `"npm:@d-b/pi-authelia"` entry picks the new path up on its own.
+
 ## 1.2.0 - 2026-11-23
 ### The default provider is `authelia`
 

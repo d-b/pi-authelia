@@ -19,10 +19,22 @@ will not silently move: pi treats an exact-version spec as pinned and skips the 
 source behaves the same way only if you name a ref — `git:github.com/d-b/pi-authelia@v1.2.0` — because
 untagged it is reset to whatever `master` holds on every reconcile. Tags start at `v1.0.0`; `v1.0.0`
 and `v1.1.0` name the commits whose four shipped files match the corresponding npm tarballs byte for
-byte, and `v1.2.0` names the release state of this version.
+byte, and `v1.2.0` names the release state of that version.
 
 Then `pi-bolt auth check --provider authelia` should report `ready` after a `/login authelia`, and
 `pi-bolt list` shows the declaration that went into `~/.pi/agent/settings.json`.
+
+The entry point is `src/index.ts`, declared under `pi.extensions` in `package.json`. Pi names a package
+extension by its directory when the file is an index (`src/index.ts` → `@d-b/pi-authelia:src`), so the
+startup list reads:
+
+```
+[Extensions]
+  @d-b/pi-authelia:src, …
+```
+
+Before 1.2.1 the module lived at `extensions/authelia-device-auth.ts`, which pi listed by file name
+(`@d-b/pi-authelia:authelia-device-auth.ts`); nothing about what it does changed in the move.
 
 **If a hand-copied copy exists, delete it first** — `~/.pi/agent/extensions/authelia-device-auth.ts`
 is a loose extension and Pi will register the provider twice (the package identity rules do not
