@@ -38,62 +38,136 @@ import type { OAuthCredentials, OAuthLoginCallbacks } from "@earendil-works/pi-a
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { readFileSync } from "node:fs";
 
-const ISSUER = "https://auth.bloemendal.me";
-const CLIENT_ID = "pi-cli";
-const BASE_URL = "https://llm.bloemendal.me/v1";
+/**
+ * Deployment-specific values, all overridable so nothing here has to be edited to point the same
+ * login flow at a different Authelia realm, gateway, pi provider name, or upstream key header.
+ * The defaults are this estate's values; the code that uses them speaks in gateway/provider terms
+ * rather than naming any one product, because the header choice below is a convention, not a
+ * vendor feature (Anthropic's API uses `x-api-key` natively, and the Bifrost gateway tested here
+ * accepts `x-api-key`, `X-API-Key` and `api-key` while rejecting a branded `X-Bifrost-Key`).
+ */
+const CONFIG = {
+	issuer: process.env.AUTHELIA_ISSUER ?? "https://auth.bloemendal.me",
+	clientId: process.env.AUTHELIA_CLIENT_ID ?? "pi-cli",
+	scope: process.env.AUTHELIA_SCOPE ?? "openid profile email groups offline_access",
+	provider: process.env.GATEWAY_PROVIDER_NAME ?? "Bifrost",
+	baseUrl: process.env.GATEWAY_BASE_URL ?? "https://llm.bloemendal.me/v1",
+	/** Header the upstream gateway reads its own key from. Never "authorization" -- see below. */
+	keyHeader: process.env.GATEWAY_KEY_HEADER ?? "x-api-key",
+	/** Environment variable that overrides the stored key, for headless or CI runs. */
+	keyEnv: process.env.GATEWAY_KEY_ENV ?? "GATEWAY_API_KEY",
+};
 
 // offline_access is what makes a refresh_token exist at all; without it this login dies with the
 // 1-hour access token and demands a fresh browser approval every hour. `groups` is requested for
 // completeness only -- nothing gates on it, because a device-flow id_token carries no `groups` or
 // `email` claim on Authelia 4.39.28 (handler_oauth2_consent.go restores the device request with an
 // empty oidc.NewSession(), so scope claims are dropped even though consent records them granted).
-// The gateway therefore authorises on issuer + aud=pi-cli + the TOTP-backed session; putting
+// The gateway therefore authorises on issuer + aud=client + the TOTP-backed session; putting
 // allowed_groups in oauth2-proxy would deny every CLI request against a claim that is never sent.
-const SCOPE = "openid profile email groups offline_access";
 
 /**
- * Optional Bifrost virtual key.
+ * Optional upstream gateway key.
  *
- * The Authelia token and the Bifrost key answer two different questions -- "may this machine
- * reach the gateway at all" and "which key owns this traffic" -- and they travel in different
- * headers because there is only one Authorization header:
+ * The Authelia token and the gateway key answer two different questions -- "may this machine reach
+ * the gateway at all" and "which key owns this traffic" -- and they travel in different headers
+ * because there is only one Authorization header:
  *
  *   Authorization: Bearer <Authelia id_token>   <- validated by the gateway; the gate
- *   x-api-key:     <Bifrost virtual key>        <- reaches Bifrost untouched; per-machine identity
+ *   x-api-key:     <upstream key>               <- reaches the gateway untouched; per-machine identity
  *
- * Measured against Bifrost v2.6.0 on the gateway host, not inferred: `x-api-key` (and `api-key`)
- * is accepted for a VK, and when both are present **x-api-key wins** -- a valid VK with a garbage
- * Authorization returns 200, a valid Authorization with a bogus x-api-key returns 401. So the VK
- * takes over accounting while the gate still decides reachability, and HAProxy's edge-key
- * substitution (haproxy.cfg, `set-header Authorization "Bearer ${BIFROST_EDGE_KEY}"`) becomes the
- * fallback rather than the identity: no x-api-key, no per-machine key, exactly the old behaviour.
+ * Measured against the deployed gateway (Bifrost v2.6.0 on llm.lan): `x-api-key` (and `api-key`) is
+ * accepted for a key, and when both headers are present **x-api-key wins** -- valid key + garbage
+ * Authorization returns 200, valid Authorization + bogus x-api-key returns 401. So the key decides
+ * which identity owns the traffic while the gate still decides whether the request is allowed at
+ * all. No gateway change was needed: haproxy.cfg strips only inbound X-Auth-Request-*.
  *
- * Do NOT put the VK in Authorization on the public URL: the gateway validates that header as an
- * Authelia token and will 401 it. That is the whole point of the design.
+ * Do NOT put the gateway key in Authorization on the public URL: the gateway validates that header
+ * as an Authelia token and will 401 it. That is the whole point of the design.
  *
- * Caveat worth stating rather than hiding: the choice of key is self-declared. Any client that
- * passes Authelia can name any VK. With one operator and one estate that is a labelling
- * convenience, not a control; if it ever needs to be a control, pin identity to key in HAProxy off
- * the X-Auth-Request-User header the auth response already mints, and delete x-api-key first.
+ * Where the value lives: asked once during `/login` and stored as `gatewayKey` next to
+ * access/refresh/expires in pi's own auth.json, so `/logout <provider>` clears it with the
+ * credential and there is no second secrets file to remember. Verified against pi rather than
+ * assumed -- the login path persists `{ type: "oauth", ...cred }`, the auth.json loader only
+ * *validates* oauth credentials and keeps the parsed object, and `read()` hands back
+ * `structuredClone(credential)`, so an extra field round-trips. `$GATEWAY_KEY_ENV` still overrides
+ * it for headless or CI runs.
+ *
+ * Caveat worth stating rather than hiding: the key is self-declared, so it is attribution and not a
+ * control. Any client that passes Authelia can name any key. With one operator that is a labelling
+ * convenience; to make it a control, pin X-Auth-Request-User to a key in HAProxy and delete
+ * inbound x-api-key first.
  */
-const VK_ENV = "BIFROST_API_KEY";
-const VK_FILE = ".pi/agent/bifrost_key"; // under $HOME, so a headless box needs no shell config
+const VK_FIELD = "gatewayKey";
 
-function virtualKey(): string {
-	const fromEnv = (process.env[VK_ENV] ?? "").trim();
-	if (fromEnv) return fromEnv;
+/** auth.json credentials plus our one optional field. */
+type Credentials = OAuthCredentials & { [VK_FIELD]?: string };
+
+/** Tolerate a trailing newline from an editor and an accidental "Bearer " prefix from a paste. */
+function normalizeKey(value: string): string {
+	return value.trim().replace(/^Bearer\s+/i, "");
+}
+
+function authJsonPath(): string {
+	const dir = process.env.PI_CODING_AGENT_DIR || `${process.env.HOME ?? ""}/.pi/agent`;
+	return `${dir}/auth.json`;
+}
+
+/**
+ * Read the stored key straight from auth.json.
+ *
+ * Why not through pi: `headers` on registerProvider is resolved once, at registration, so there is
+ * no callback to ask -- and the alternative injection point, the `before_provider_headers` hook,
+ * fires for *every* provider with an event of exactly `{ type, headers }` and no provider field.
+ * Putting the key there would hand your Bifrost key to Anthropic, OpenAI and anything else
+ * configured. Provider-scoped registration is the only safe place, so this one file read is how it
+ * gets its value. It reads only Bifrost's own entry and the key is never logged.
+ */
+function storedVirtualKey(): string {
 	try {
-		// A file rather than only an env var because Pi is usually started from an interactive
-		// shell on a box reached over ssh, and leaking a key into shell config or `ps` output is
-		// the failure mode worth avoiding here. Read with no logging; never echoed.
-		const home = process.env.HOME ?? "";
-		if (!home) return "";
-		const raw = readFileSync(`${home}/${VK_FILE}`, "utf8") as string;
-		// Tolerate a trailing newline (editors add one) and an accidental "Bearer " prefix.
-		return raw.trim().replace(/^Bearer\s+/i, "");
+		const parsed = JSON.parse(readFileSync(authJsonPath(), "utf8")) as Record<string, Partial<Credentials>>;
+		const value = parsed[CONFIG.provider]?.[VK_FIELD];
+		return typeof value === "string" ? normalizeKey(value) : "";
 	} catch {
-		return ""; // absent or unreadable is a normal state: Authelia-only, edge key at the gate
+		return ""; // absent, unreadable or malformed is a normal state: gate-only, shared upstream key
 	}
+}
+
+/** Precedence: explicit environment, then this credential, then what auth.json holds. */
+function resolveVirtualKey(credential?: Partial<Credentials>): string {
+	const fromEnv = (process.env[CONFIG.keyEnv] ?? "").trim();
+	if (fromEnv) return normalizeKey(fromEnv);
+	const fromCredential = credential?.[VK_FIELD];
+	if (typeof fromCredential === "string" && fromCredential.trim()) return normalizeKey(fromCredential);
+	return storedVirtualKey();
+}
+
+/**
+ * Ask for the key as part of `/login`. Optional by design: pressing enter keeps the current
+ * behaviour (whatever shared key the gateway substitutes), which is also what a machine without a
+ * key of its own should do. A headless caller with no prompt capability is not an error.
+ */
+async function promptForVirtualKey(callbacks: OAuthLoginCallbacks): Promise<string> {
+	if (!callbacks.onPrompt) return "";
+	let answer: string;
+	try {
+		answer = await callbacks.onPrompt({
+			message: `${CONFIG.provider} API key (optional, for per-machine usage and limits). Press enter to skip.`,
+		});
+	} catch {
+		return ""; // declined/cancelled prompt: log in without a key rather than fail the login
+	}
+	const key = normalizeKey(answer ?? "");
+	if (!key) return "";
+	if (!/^[A-Za-z0-9._~-]{12,}$/.test(key)) {
+		// Deliberately not a hard failure: pi cannot know this gateway's key format, and rejecting a
+		// valid-looking key would block a working login. Warn, and let the first 401 from the gateway
+		// be the (accurate) error the operator sees, with /login to fix it.
+		callbacks.onProgress?.(`Stored key "${key.slice(0, 6)}...", which does not look like an API key (no spaces, printable, 12+ chars). Run /login ${CONFIG.provider} again to change it.`);
+	} else {
+		callbacks.onProgress?.(`Gateway key stored in auth.json; run /reload (or restart pi) to start sending it.`);
+	}
+	return key;
 }
 
 // Refresh a little before the real expiry so a long request is not started on a token that
@@ -107,7 +181,7 @@ type Discovery = {
 };
 
 async function discover(signal: AbortSignal | undefined): Promise<Discovery> {
-	const res = await fetch(`${ISSUER}/.well-known/openid-configuration`, {
+	const res = await fetch(`${CONFIG.issuer}/.well-known/openid-configuration`, {
 		signal,
 		headers: { accept: "application/json" },
 	});
@@ -169,7 +243,7 @@ function expiryOf(tokenResponse: Record<string, unknown>): number {
 	return Date.now() + 60 * 60 * 1000 - EXPIRY_MARGIN_MS;
 }
 
-function toCredentials(tokenResponse: Record<string, unknown>): OAuthCredentials {
+function toCredentials(tokenResponse: Record<string, unknown>): Credentials {
 	// See the header: id_token, not access_token, is the verifiable bearer here.
 	const access = str(tokenResponse.id_token) || str(tokenResponse.access_token);
 	if (!access) throw new Error("Authelia returned no id_token; is the `openid` scope granted?");
@@ -183,13 +257,13 @@ function toCredentials(tokenResponse: Record<string, unknown>): OAuthCredentials
 	return { access, refresh, expires: expiryOf(tokenResponse) };
 }
 
-async function login(callbacks: OAuthLoginCallbacks): Promise<OAuthCredentials> {
+async function login(callbacks: OAuthLoginCallbacks): Promise<Credentials> {
 	const signal = callbacks.signal;
 	const doc = await discover(signal);
 
 	const req = await formPost(
 		doc.device_authorization_endpoint!,
-		{ client_id: CLIENT_ID, scope: SCOPE },
+		{ client_id: CONFIG.clientId, scope: CONFIG.scope },
 		signal,
 	);
 	if (req.status !== 200 || !str(req.body.device_code)) {
@@ -198,7 +272,7 @@ async function login(callbacks: OAuthLoginCallbacks): Promise<OAuthCredentials> 
 		// otherwise a genuinely undiagnosable failure from the client side.
 		throw new Error(
 			`Device authorization request failed (HTTP ${req.status}): ${detail}\n` +
-				`  If the detail is empty, ${CLIENT_ID} probably lacks the device_code grant -- the reason ` +
+				`  If the detail is empty, ${CONFIG.clientId} probably lacks the device_code grant -- the reason ` +
 				`is only in the Authelia container log.`,
 		);
 	}
@@ -234,10 +308,17 @@ async function login(callbacks: OAuthLoginCallbacks): Promise<OAuthCredentials> 
 
 		const res = await formPost(
 			doc.token_endpoint!,
-			{ grant_type: "urn:ietf:params:oauth:grant-type:device_code", device_code: deviceCode, client_id: CLIENT_ID },
+			{ grant_type: "urn:ietf:params:oauth:grant-type:device_code", device_code: deviceCode, client_id: CONFIG.clientId },
 			signal,
 		);
-		if (res.status === 200 && str(res.body.id_token)) return toCredentials(res.body);
+		if (res.status === 200 && str(res.body.id_token)) {
+			const creds = toCredentials(res.body);
+			// Asked after the token is real, so an abandoned browser login never leaves a stray key
+			// behind, and a key typed into a prompt is stored only alongside a usable credential.
+			const key = await promptForVirtualKey(callbacks);
+			if (key) creds[VK_FIELD] = key;
+			return creds;
+		}
 
 		const err = str(res.body.error);
 		if (err === "authorization_pending") continue;
@@ -269,15 +350,15 @@ async function login(callbacks: OAuthLoginCallbacks): Promise<OAuthCredentials> 
 	throw new Error(`Timed out after ${Math.round(expiresInSeconds / 60)} minutes waiting for the browser login.`);
 }
 
-async function refreshToken(credentials: OAuthCredentials, signal: AbortSignal): Promise<OAuthCredentials> {
+async function refreshToken(credentials: Credentials, signal: AbortSignal): Promise<Credentials> {
 	const doc = await discover(signal);
 	const res = await formPost(
 		doc.token_endpoint!,
 		{
 			grant_type: "refresh_token",
-			client_id: CLIENT_ID,
+			client_id: CONFIG.clientId,
 			refresh_token: credentials.refresh,
-			scope: SCOPE,
+			scope: CONFIG.scope,
 		},
 		signal,
 	);
@@ -291,8 +372,16 @@ async function refreshToken(credentials: OAuthCredentials, signal: AbortSignal):
 			`Run /login Bifrost and complete the browser login with TOTP again.`,
 		);
 	}
-	return toCredentials(res.body);
+	const next = toCredentials(res.body);
+	// Carry the key across explicitly. toCredentials builds a fresh object from the token response,
+	// so without this the stored key would silently vanish on the first hourly refresh and traffic
+	// would quietly revert to the shared edge key -- a failure with no error and no log.
+	const carried = normalizeKey(credentials[VK_FIELD] ?? "");
+	if (carried) next[VK_FIELD] = carried;
+	return next;
 }
+
+export { login, refreshToken, resolveVirtualKey, normalizeKey };
 
 export default function (pi: ExtensionAPI) {
 	// Registering the same name the existing models.json entry uses means Pi treats this as that
@@ -303,14 +392,14 @@ export default function (pi: ExtensionAPI) {
 	// Install on the client machines only (rokan, and anywhere else Pi talks to the public
 	// gateway). Installing it on the gateway host itself would route that Pi through the public
 	// URL and the SSO it fronts.
-	const key = virtualKey();
+	const key = resolveVirtualKey();
 
-	pi.registerProvider("Bifrost", {
-		baseUrl: BASE_URL,
+	pi.registerProvider(CONFIG.provider, {
+		baseUrl: CONFIG.baseUrl,
 		api: "openai-completions",
-		// Omitted entirely when unset, so a machine with no VK keeps working through the gateway's
-		// shared edge key instead of sending an empty header that Bifrost would (correctly) reject.
-		...(key ? { headers: { "x-api-key": key } } : {}),
+		// Omitted entirely when unset, so a machine with no key keeps working through whatever the
+		// gateway substitutes, instead of sending an empty header the upstream would reject.
+		...(key ? { headers: { [CONFIG.keyHeader]: key } } : {}),
 		oauth: {
 			name: "Authelia (browser + TOTP)",
 			login,

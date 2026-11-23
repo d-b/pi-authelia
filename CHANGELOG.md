@@ -3,6 +3,32 @@
 Version headings follow Pi's package-changelog convention (`## <version>`), so Pi can show what
 changed after `pi update --extensions`.
 
+## 1.1.0 - 2026-11-23
+
+### The key is now asked for during `/login`, and the vocabulary is gateway-neutral
+
+`/login <provider>` now ends with an optional prompt for the upstream key, stored as `gatewayKey`
+inside the provider's own `auth.json` entry beside `access`/`refresh`/`expires`. That means
+`/logout <provider>` clears it with the credential, there is no second secrets file, and nothing has
+to be exported in shell config on a headless box. Precedence is `$GATEWAY_KEY_ENV` -> the credential
+-> `auth.json`.
+
+Everything deployment-specific moved into env-overridable config, so the same file serves a different
+realm, gateway, pi provider name or key header: `AUTHELIA_ISSUER`, `AUTHELIA_CLIENT_ID`,
+`AUTHELIA_SCOPE`, `GATEWAY_PROVIDER_NAME`, `GATEWAY_BASE_URL`, `GATEWAY_KEY_HEADER`,
+`GATEWAY_KEY_ENV`. Product-specific wording (`Bifrost virtual key`) became provider-driven copy.
+
+**Breaking vs 1.0.0**, both intentional:
+
+- `BIFROST_API_KEY` is no longer read directly. The equivalent is `GATEWAY_API_KEY`, or keep the old
+  variable name by setting `GATEWAY_KEY_ENV=BIFROST_API_KEY`.
+- `~/.pi/agent/bifrost_key` is no longer read. Answer the `/login` prompt instead (the value then
+  lives in `auth.json`), or export `GATEWAY_API_KEY`.
+
+Also fixed in this release: 1.0.0 could only take the key from the environment at startup, so a key
+supplied later had no effect until the process restarted. A key answered at `/login` is now stored
+immediately and picked up on the next start or `/reload`, with the progress line saying so.
+
 ## 1.0.0 - 2026-11-23
 
 First packaged release. Previously this was a single `.ts` file copied into

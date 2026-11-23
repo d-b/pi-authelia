@@ -1,6 +1,6 @@
 {
   "name": "@d-b/pi-authelia",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Pi provider extension: Authelia device-authorization login (browser password + TOTP, CLI polls to completion) for a self-hosted OpenAI-compatible gateway, with optional Bifrost virtual-key attribution.",
   "type": "module",
   "keywords": [

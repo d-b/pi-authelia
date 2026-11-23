@@ -28,25 +28,47 @@ rm -f ~/.pi/agent/extensions/authelia-device-auth.ts
 Do **not** install on `llm.lan`: it would route that pi through the public URL and the SSO in
 front of it. The gateway-side half lives in the gateway repo (`AUTH.md`, `oauth2-proxy/config.cfg`).
 
-## Optional: a per-machine Bifrost virtual key
+## Optional: an upstream gateway key
 
-The gateway substitutes its own shared Bifrost key after Authelia validates a request, which means
-every public `pi` session is billed and logged as `edge@llm.bloemendal.me`. To get per-machine
-attribution while keeping the SSO gate, give the extension a virtual key:
+After Authelia validates a request the gateway substitutes its own shared key, so every public `pi`
+session is billed and logged under one identity (`edge@llm.bloemendal.me` here). Answer the prompt at
+the end of `/login` to attribute your traffic to a key of its own:
 
-```bash
-printf '%s\n' sk-bf-... > ~/.pi/agent/bifrost_key && chmod 600 ~/.pi/agent/bifrost_key
-# or
-export BIFROST_API_KEY=sk-bf-...
-```
+    Bifrost API key (optional, for per-machine usage and limits). Press enter to skip.
 
-`BIFROST_API_KEY` wins over the file, and when neither is set no header is sent at all (rather than
-an empty one, which Bifrost correctly rejects).
+The value is stored as `gatewayKey` in that provider's `auth.json` entry, so `/logout Bifrost`
+clears it along with the credential and there is no separate secrets file to keep track of. Press
+enter and nothing changes from the previous behaviour — the header is omitted rather than sent empty.
 
-It travels in **`x-api-key`**, never `Authorization`: there is only one `Authorization` header and
-on the public path it belongs to Authelia, which will 401 a Bifrost key presented in it. Measured
-against Bifrost v2.6.0 — `x-api-key` takes precedence when both are present, so the VK decides
-which key owns the traffic while the gate still decides whether the request is allowed at all.
+Resolution order, first match wins:
+
+1. `$GATEWAY_KEY_ENV` (default `GATEWAY_API_KEY`) — headless and CI runs
+2. `gatewayKey` on the credential in use
+3. `gatewayKey` in `auth.json` for the configured provider
+
+Nothing here is tied to one product, so all of it is overridable:
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `AUTHELIA_ISSUER` | `https://auth.bloemendal.me` | OIDC issuer to discover |
+| `AUTHELIA_CLIENT_ID` | `pi-cli` | public client id |
+| `AUTHELIA_SCOPE` | `openid profile email groups offline_access` | requested scopes |
+| `GATEWAY_PROVIDER_NAME` | `Bifrost` | pi provider this extension registers |
+| `GATEWAY_BASE_URL` | `https://llm.bloemendal.me/v1` | gateway endpoint |
+| `GATEWAY_KEY_HEADER` | `x-api-key` | header the upstream reads its own key from |
+| `GATEWAY_KEY_ENV` | `GATEWAY_API_KEY` | variable that overrides the stored key |
+
+The key travels in **`x-api-key`**, never `Authorization`: there is only one `Authorization` header
+and on the public path it belongs to Authelia, which 401s anything else presented in it. `x-api-key`
+is a convention rather than a vendor feature — Anthropic's API uses it natively, and the Bifrost
+gateway tested here accepts `x-api-key`, `X-API-Key` and `api-key` while rejecting a branded
+`X-Bifrost-Key`. Measured on Bifrost v2.6.0: when both headers are present **`x-api-key` wins**, so
+the key decides which identity owns the traffic while the gate decides whether the request is
+allowed at all.
+
+One timing note: a provider's `headers` are resolved once, when the extension registers at startup,
+so a key answered during `/login` starts being sent on the next start or `/reload` — the progress
+line says exactly that.
 
 Self-declared, so it is attribution and not a control: any client that passes Authelia can name any
 key. With one operator that is a labelling convenience; to make it a control, pin
@@ -60,13 +82,17 @@ key. With one operator that is a labelling convenience; to make it a control, pi
 2. The gateway serving `llm.bloemendal.me` with the bearer path (`/v1` → JSON 401 rather than a
    redirect to the portal).
 
-## Notes on the two non-obvious parts
+## Notes on the three non-obvious parts
 
 - **`access` holds the `id_token`, not the `access_token`.** Authelia's device-flow
   access_token is opaque (default `access_token_signed_response_alg: none`), so only the
   RS256 id_token is verifiable by the gateway. Verified on a real 4.39.28 instance.
 - **Refresh rotates.** Every refresh returns a new refresh_token; returning only the access
   token would silently kill the session after the first hour. Handled in `refreshToken`.
+- **Refresh also has to re-attach the gateway key.** `toCredentials` builds a fresh object from the
+  token response, so a stored `gatewayKey` would vanish on the first refresh and traffic would
+  quietly revert to the shared key — no error, no log. It is carried over explicitly, and a test
+  covers it.
 
 Tokens go only to `~/.pi/agent/auth.json` (pi's own store) — never to logs, including on the
 error paths, which quote Authelia's `error`/`error_description` only.
