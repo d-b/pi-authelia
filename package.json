@@ -18,7 +18,7 @@
     "llm-gateway"
   ],
   "license": "MIT",
-  "private": true,
+  "private": false,
   "repository": {
     "type": "git",
     "url": "git+https://github.com/d-b/pi-authelia.git"
