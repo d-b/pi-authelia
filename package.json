@@ -1,0 +1,8 @@
+{
+  "name": "pi-authelia-device",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Authelia device-authorization login (browser + TOTP) for the Bifrost provider on llm.bloemendal.me",
+  "pi": { "extensions": ["./index.ts"] }
+}
