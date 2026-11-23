@@ -211,17 +211,30 @@ type Discovery = {
 	issuer?: string;
 };
 
-async function discover(signal: AbortSignal | undefined): Promise<Discovery> {
+/**
+ * The two endpoints this flow needs, proven present by `discover`. Declared so the check lives in
+ * one place and callers get a narrowed value instead of a non-null assertion at every use site.
+ */
+type Endpoints = { device_authorization_endpoint: string; token_endpoint: string };
+
+async function discover(signal: AbortSignal | undefined): Promise<Discovery & Endpoints> {
 	const res = await fetch(`${CONFIG.issuer}/.well-known/openid-configuration`, {
-		signal,
+		// `?? null` rather than passing `undefined` through: RequestInit types `signal` as
+		// `AbortSignal | null`, which is not satisfied by an absent property under
+		// exactOptionalPropertyTypes. Null means the same thing to fetch.
+		signal: signal ?? null,
 		headers: { accept: "application/json" },
 	});
 	if (!res.ok) throw new Error(`Authelia discovery failed: HTTP ${res.status}`);
 	const doc = (await res.json()) as Discovery;
-	if (!doc.device_authorization_endpoint || !doc.token_endpoint) {
+	const { device_authorization_endpoint: deviceAuthEndpoint, token_endpoint: tokenEndpoint } = doc;
+	if (!deviceAuthEndpoint || !tokenEndpoint) {
 		throw new Error("Authelia discovery advertises no device_authorization_endpoint / token_endpoint");
 	}
-	return doc;
+	// Rebuilt from the guarded locals, so the returned object carries the proof in its type. Narrowing
+	// `doc` itself does not survive here: with exactOptionalPropertyTypes a `Discovery` whose
+	// properties happen to be non-empty is still not an assignable `Discovery & Endpoints`.
+	return { ...doc, device_authorization_endpoint: deviceAuthEndpoint, token_endpoint: tokenEndpoint };
 }
 
 /** POST an OAuth form body. OAuth endpoints answer JSON on both success and failure. */
@@ -232,7 +245,7 @@ async function formPost(
 ): Promise<{ status: number; body: Record<string, unknown> }> {
 	const res = await fetch(url, {
 		method: "POST",
-		signal,
+		signal: signal ?? null, // see `discover`: null, not an absent property, for an undefined signal
 		headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
 		body: new URLSearchParams(form).toString(),
 	});
@@ -293,7 +306,7 @@ async function login(callbacks: OAuthLoginCallbacks): Promise<Credentials> {
 	const doc = await discover(signal);
 
 	const req = await formPost(
-		doc.device_authorization_endpoint!,
+		doc.device_authorization_endpoint,
 		{ client_id: CONFIG.clientId, scope: CONFIG.scope },
 		signal,
 	);
@@ -338,7 +351,7 @@ async function login(callbacks: OAuthLoginCallbacks): Promise<Credentials> {
 		});
 
 		const res = await formPost(
-			doc.token_endpoint!,
+			doc.token_endpoint,
 			{ grant_type: "urn:ietf:params:oauth:grant-type:device_code", device_code: deviceCode, client_id: CONFIG.clientId },
 			signal,
 		);
@@ -381,10 +394,17 @@ async function login(callbacks: OAuthLoginCallbacks): Promise<Credentials> {
 	throw new Error(`Timed out after ${Math.round(expiresInSeconds / 60)} minutes waiting for the browser login.`);
 }
 
-async function refreshToken(credentials: Credentials, signal: AbortSignal): Promise<Credentials> {
+/**
+ * `signal` is optional on purpose. Current pi passes one and pi 1.6.0's own docs show
+ * `refreshToken(credentials, signal)`, but the signature declared by older pi-ai releases takes only
+ * the credentials, which an implementation with a required second parameter is not assignable to.
+ * Optional satisfies both declarations and still receives the signal when pi supplies one; with no
+ * caller-supplied signal the refresh request simply runs uncancellable, as before.
+ */
+async function refreshToken(credentials: Credentials, signal?: AbortSignal): Promise<Credentials> {
 	const doc = await discover(signal);
 	const res = await formPost(
-		doc.token_endpoint!,
+		doc.token_endpoint,
 		{
 			grant_type: "refresh_token",
 			client_id: CONFIG.clientId,

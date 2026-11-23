@@ -37,6 +37,32 @@ the value it asks for is the key *behind* the gateway, which is neither the SSO 
 it is now simply "Upstream gateway API key". `bifrost` left the npm keywords for the same reason it
 left the prose; put it back if discovering this package by gateway product still matters.
 
+### Types and lint
+
+`extensions/authelia-device-auth.ts` is now clean under `tsc --strict` and `biome lint`; it had one
+type error and three lint warnings before:
+
+- `refreshToken(credentials, signal)` was not assignable to the `oauth.refreshToken` declaration in
+  older pi-ai releases, which take only the credentials. The parameter is optional now, which
+  satisfies both declarations and still receives the signal when pi supplies one -- pi 1.6.0's own
+  `registerProvider` example shows the two-argument form. Without a caller-supplied signal the refresh
+  request runs uncancellable, which is what it did under the older declaration anyway.
+- `discover()` now returns the two endpoints it already checks for, so their presence is established
+  in one place and the three non-null assertions at its call sites are gone.
+- `signal ?? null` at the two `fetch` calls. `RequestInit.signal` is `AbortSignal | null`, so an
+  absent signal has to be null rather than an omitted property once `exactOptionalPropertyTypes` is
+  on -- the setting that would otherwise be unable to type a dropped cancellation token.
+
+Behaviour re-checked against a local stub instead of reasoned about: the device login still surfaces
+the user code and stores the id_token as `access`, refresh still rotates and still carries the stored
+key (including promoting a legacy `gatewayKey`), an aborted signal still stops both flows, and a
+discovery document without endpoints still fails with the same message. Checked with
+`@earendil-works/*` 0.82.1 and 1.6.0's docs, TypeScript 6 + biome 2.5.6 via the neighbouring
+`agent-smart-fetch` checkout; this package carries no tsconfig or biome config of its own yet, so
+that command line is not reproducible from the repo. The same stub run is what the README means by
+"a test covers it" for refresh carrying the key -- the behaviour is verified, but no test file ships
+in this package.
+
 ## 1.1.0 - 2026-11-23
 
 ### The key is now asked for during `/login`
