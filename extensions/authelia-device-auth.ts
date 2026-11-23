@@ -1,6 +1,6 @@
 /**
  * Authelia device-authorization login for an SSO-fronted OpenAI-compatible gateway provider
- * (default provider name `Bifrost`, overridable with GATEWAY_PROVIDER_NAME).
+ * (default provider id `authelia`, overridable with GATEWAY_PROVIDER_NAME).
  *
  * `/login <provider>` prints a URL and a short code, the operator opens it in any browser
  * (phone is fine), does password + TOTP on https://auth.bloemendal.me, and this flow finishes
@@ -41,17 +41,24 @@ import { readFileSync } from "node:fs";
 
 /**
  * Deployment-specific values, all overridable so nothing here has to be edited to point the same
- * login flow at a different Authelia realm, gateway, pi provider name, or upstream key header.
+ * login flow at a different Authelia realm, gateway, pi provider id, or upstream key header.
  * The defaults are this estate's values; the code that uses them speaks in gateway/provider terms
  * rather than naming any one product, because the header choice below is a convention, not a
- * vendor feature (Anthropic's API uses `x-api-key` natively, and the Bifrost gateway tested here
- * accepts `x-api-key`, `X-API-Key` and `api-key` while rejecting a branded `X-Bifrost-Key`).
+ * vendor feature (Anthropic's API uses `x-api-key` natively, and the gateway tested here accepts
+ * `x-api-key`, `X-API-Key` and `api-key` while rejecting a branded key header).
  */
 const CONFIG = {
 	issuer: process.env.AUTHELIA_ISSUER ?? "https://auth.bloemendal.me",
 	clientId: process.env.AUTHELIA_CLIENT_ID ?? "pi-cli",
 	scope: process.env.AUTHELIA_SCOPE ?? "openid profile email groups offline_access",
-	provider: process.env.GATEWAY_PROVIDER_NAME ?? "Bifrost",
+	/**
+	 * pi provider id. Exact, case-sensitive key for this provider's `models.json` and `auth.json`
+	 * entries, so it is not the place for display capitalisation -- pi's own built-in ids are all
+	 * lowercase-hyphenated (`openai`, `github-copilot`, `google-vertex`). See `providerLabel`.
+	 */
+	provider: process.env.GATEWAY_PROVIDER_NAME ?? "authelia",
+	/** Display name: pi's provider label (ProviderConfig.name) and the word used in our own copy. */
+	providerLabel: process.env.GATEWAY_PROVIDER_LABEL ?? "Authelia",
 	baseUrl: process.env.GATEWAY_BASE_URL ?? "https://llm.bloemendal.me/v1",
 	/** Header the upstream gateway reads its own key from. Never "authorization" -- see below. */
 	keyHeader: process.env.GATEWAY_KEY_HEADER ?? "x-api-key",
@@ -77,7 +84,7 @@ const CONFIG = {
  *   Authorization: Bearer <Authelia id_token>   <- validated by the gateway; the gate
  *   x-api-key:     <upstream key>               <- reaches the gateway untouched; per-machine identity
  *
- * Measured against the deployed gateway (Bifrost v2.6.0 on llm.lan): `x-api-key` (and `api-key`) is
+ * Measured against the deployed gateway (v2.6.0 on llm.lan): `x-api-key` (and `api-key`) is
  * accepted for a key, and when both headers are present **x-api-key wins** -- valid key + garbage
  * Authorization returns 200, valid Authorization + bogus x-api-key returns 401. So the key decides
  * which identity owns the traffic while the gate still decides whether the request is allowed at
@@ -174,7 +181,9 @@ async function promptForGatewayKey(callbacks: OAuthLoginCallbacks): Promise<stri
 	let answer: string;
 	try {
 		answer = await callbacks.onPrompt({
-			message: `${CONFIG.provider} API key (optional, for per-machine usage and limits). Press enter to skip.`,
+			// "Upstream gateway", not "${provider}": the provider is named for the SSO in front of the
+			// gateway, and this value is the key *behind* it. Naming either product here would be wrong.
+			message: "Upstream gateway API key (optional, for per-machine usage and limits). Press enter to skip.",
 		});
 	} catch {
 		return ""; // declined/cancelled prompt: log in without a key rather than fail the login
@@ -417,6 +426,8 @@ export default function (pi: ExtensionAPI) {
 	const key = resolveGatewayKey();
 
 	pi.registerProvider(CONFIG.provider, {
+		// The id (first argument) is the storage key; this is the label pi shows.
+		name: CONFIG.providerLabel,
 		baseUrl: CONFIG.baseUrl,
 		api: "openai-completions",
 		// Omitted entirely when unset, so a machine with no key keeps working through whatever the

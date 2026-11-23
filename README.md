@@ -1,6 +1,6 @@
 # pi-authelia
 
-`/login Bifrost` on a headless box: prints a URL + short code, you approve in any browser with
+`/login authelia` on a headless box: prints a URL + short code, you approve in any browser with
 password + TOTP, the CLI finishes by itself. No paste, no port-forward, no callback listener —
 which is what makes it work over ssh. RFC 8628 device grant against Authelia
 (`https://auth.bloemendal.me`), client `pi-cli`; the resulting id_token is presented as the
@@ -14,7 +14,7 @@ pi-bolt install git:github.com/d-b/pi-authelia@v1.0.0   # needs git read access 
 pi-bolt install ./pi-authelia               # local path, no copying
 ```
 
-Then `pi-bolt auth check --provider Bifrost` should report `ready` after a `/login Bifrost`, and
+Then `pi-bolt auth check --provider authelia` should report `ready` after a `/login authelia`, and
 `pi-bolt list` shows the declaration that went into `~/.pi/agent/settings.json`.
 
 **If a hand-copied copy exists, delete it first** — `~/.pi/agent/extensions/authelia-device-auth.ts`
@@ -28,15 +28,34 @@ rm -f ~/.pi/agent/extensions/authelia-device-auth.ts
 Do **not** install on `llm.lan`: it would route that pi through the public URL and the SSO in
 front of it. The gateway-side half lives in the gateway repo (`AUTH.md`, `oauth2-proxy/config.cfg`).
 
+## Renamed from `Bifrost`
+
+The default provider id is now **`authelia`** — lowercase like pi's own built-in ids (`openai`,
+`github-copilot`, `google-vertex`), with `Authelia` passed separately as the display name. A provider
+id is an exact, case-sensitive key, so a machine that used the previous default needs two one-time
+steps:
+
+1. **Rename the `models.json` entry** — `providers."Bifrost"` → `providers."authelia"` in
+   `~/.pi/agent/models.json`. This one is not optional: the model catalog comes from that entry, so
+   without it the provider registers with no models and nothing is selectable.
+2. **`/login authelia` again** — the `auth.json` entry is keyed `Bifrost` and is not read, so neither
+   the credential nor a stored gateway key carries over. `settings.json`'s `defaultProvider` also
+   still says `Bifrost`; pick a model once and it is rewritten.
+
+Nothing is migrated in code, because the old name would have to be resolved separately in
+`models.json`, `auth.json` and `settings.json`. To keep the old name instead, set
+`GATEWAY_PROVIDER_NAME=Bifrost` — everything else in this README then reads `Bifrost` where it says
+`authelia`.
+
 ## Optional: an upstream gateway key
 
 After Authelia validates a request the gateway substitutes its own shared key, so every public `pi`
 session is billed and logged under one identity (`edge@llm.bloemendal.me` here). Answer the prompt at
 the end of `/login` to attribute your traffic to a key of its own:
 
-    Bifrost API key (optional, for per-machine usage and limits). Press enter to skip.
+    Upstream gateway API key (optional, for per-machine usage and limits). Press enter to skip.
 
-The value is stored as **`key`** in that provider's `auth.json` entry, so `/logout Bifrost`
+The value is stored as **`key`** in that provider's `auth.json` entry, so `/logout authelia`
 clears it along with the credential and there is no separate secrets file to keep track of. Press
 enter and nothing changes from the previous behaviour — the header is omitted rather than sent empty.
 
@@ -56,16 +75,17 @@ Nothing here is tied to one product, so all of it is overridable:
 | `AUTHELIA_ISSUER` | `https://auth.bloemendal.me` | OIDC issuer to discover |
 | `AUTHELIA_CLIENT_ID` | `pi-cli` | public client id |
 | `AUTHELIA_SCOPE` | `openid profile email groups offline_access` | requested scopes |
-| `GATEWAY_PROVIDER_NAME` | `Bifrost` | pi provider this extension registers |
+| `GATEWAY_PROVIDER_NAME` | `authelia` | pi provider id this extension registers (exact key in `models.json`/`auth.json`) |
+| `GATEWAY_PROVIDER_LABEL` | `Authelia` | display name for that provider in pi's UI |
 | `GATEWAY_BASE_URL` | `https://llm.bloemendal.me/v1` | gateway endpoint |
 | `GATEWAY_KEY_HEADER` | `x-api-key` | header the upstream reads its own key from |
 | `GATEWAY_KEY_ENV` | `GATEWAY_API_KEY` | variable that overrides the stored key |
 
 The key travels in **`x-api-key`**, never `Authorization`: there is only one `Authorization` header
 and on the public path it belongs to Authelia, which 401s anything else presented in it. `x-api-key`
-is a convention rather than a vendor feature — Anthropic's API uses it natively, and the Bifrost
-gateway tested here accepts `x-api-key`, `X-API-Key` and `api-key` while rejecting a branded
-`X-Bifrost-Key`. Measured on Bifrost v2.6.0: when both headers are present **`x-api-key` wins**, so
+is a convention rather than a vendor feature — Anthropic's API uses it natively, and the gateway
+tested here accepts `x-api-key`, `X-API-Key` and `api-key` while rejecting a branded key header.
+Measured on the deployed gateway (v2.6.0): when both headers are present **`x-api-key` wins**, so
 the key decides which identity owns the traffic while the gate decides whether the request is
 allowed at all.
 

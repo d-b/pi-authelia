@@ -3,6 +3,40 @@
 Version headings follow Pi's package-changelog convention (`## <version>`), so Pi can show what
 changed after `pi update --extensions`.
 
+## 1.2.0
+
+### The default provider is `authelia`
+
+`GATEWAY_PROVIDER_NAME` now defaults to `authelia` instead of `Bifrost` -- the last product-specific
+default in a user-facing path. The id is lowercase because that is pi's own convention: every built-in
+provider id is lowercase-hyphenated (`openai`, `anthropic`, `github-copilot`, `google-vertex`,
+`amazon-bedrock`), and so is every name in pi's `registerProvider` examples. The capitalised spelling
+moved to where pi puts display names, `ProviderConfig.name`, defaulting to `Authelia` and overridable
+with the new `GATEWAY_PROVIDER_LABEL`. Checked against the build rather than assumed: the composer
+resolves the label as `extension?.name ?? config?.name ?? base?.name ?? …`, so the legacy
+registration form does honour it.
+
+**Breaking** on any machine that used the previous default name, because pi matches provider ids
+exactly -- `pi-ai` looks a provider up with `providers.get(id)` and both `models.json` and
+`auth.json` are keyed by the literal id; only typed `provider/model` references go through the
+case-insensitive resolver:
+
+- The `models.json` provider entry must be renamed to `authelia`, or the provider registers with an
+  empty catalog and no model is selectable. This is the one step with no workaround.
+- The `auth.json` entry is not read under the new name, so `/login authelia` is needed once, and a
+  stored gateway key goes with the old entry.
+- `settings.json`'s `defaultProvider` keeps the old value until a model is picked again.
+
+Nothing is migrated in code: the old spelling would have to be resolved in three separate files, and
+`GATEWAY_PROVIDER_NAME=Bifrost` already reproduces the previous behaviour exactly.
+
+Also in this release, the notes that explained the `x-api-key` choice no longer name the gateway
+product they were measured on; the measurements themselves, and the version they were taken against,
+are unchanged. The `/login` prompt stopped interpolating the provider name into that question too --
+the value it asks for is the key *behind* the gateway, which is neither the SSO nor the provider, so
+it is now simply "Upstream gateway API key". `bifrost` left the npm keywords for the same reason it
+left the prose; put it back if discovering this package by gateway product still matters.
+
 ## 1.1.0 - 2026-11-23
 
 ### The key is now asked for during `/login`
